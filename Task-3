@@ -1,0 +1,132 @@
+# app.py  —  One-file End-to-End Data Science Project (Iris Classification)
+# - Trains a RandomForest on the Iris dataset (first run)
+# - Serves a Flask web app with a simple form
+# - Also exposes a JSON API at /predict_json
+# Works on Windows/Mac/Linux, Python 3.8+
+
+import os
+import joblib
+import numpy as np
+from flask import Flask, request, jsonify, render_template_string
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+
+MODEL_PATH = "iris_model.pkl"
+SPECIES = ['Setosa', 'Versicolor', 'Virginica']
+
+app = Flask(__name__)
+
+# ---------- 1) TRAIN OR LOAD MODEL ----------
+def train_and_save_model(path=MODEL_PATH):
+    iris = load_iris()
+    X, y = iris.data, iris.target
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    clf = RandomForestClassifier(random_state=42)
+    clf.fit(X_train, y_train)
+    acc = accuracy_score(y_test, clf.predict(X_test))
+    joblib.dump({"model": clf, "accuracy": acc}, path)
+    return clf, acc
+
+def load_model(path=MODEL_PATH):
+    if not os.path.exists(path):
+        return train_and_save_model(path)
+    bundle = joblib.load(path)
+    return bundle["model"], bundle.get("accuracy", None)
+
+model, saved_acc = load_model()
+
+# ---------- 2) WEB UI (inline HTML) ----------
+PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Iris Flower Prediction</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#f7f9fc; display:flex; height:100vh; margin:0; }
+    .card { margin:auto; background:white; padding:28px; border-radius:16px; width:340px;
+            box-shadow:0 10px 25px rgba(0,0,0,0.08); }
+    h2 { margin:0 0 6px; }
+    p.small { color:#6b7280; margin-top:2px; }
+    input { width:100%; padding:10px 12px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px; }
+    button { width:100%; padding:12px; background:#2563eb; color:white; border:none; border-radius:10px; font-weight:600; cursor:pointer; }
+    button:hover { background:#1e40af; }
+    .result { margin-top:14px; padding:10px 12px; background:#eff6ff; border-radius:10px; color:#1e3a8a; font-weight:600; }
+    .meta { margin-top:10px; color:#6b7280; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🌸 Iris Predictor</h2>
+    <p class="small">Enter 4 measurements and get the species.</p>
+
+    <form method="post" action="/predict">
+      <input type="number" step="any" name="sepal_length" placeholder="Sepal Length (cm)" required />
+      <input type="number" step="any" name="sepal_width"  placeholder="Sepal Width (cm)"  required />
+      <input type="number" step="any" name="petal_length" placeholder="Petal Length (cm)" required />
+      <input type="number" step="any" name="petal_width"  placeholder="Petal Width (cm)"  required />
+      <button type="submit">Predict</button>
+    </form>
+
+    {% if prediction_text %}
+      <div class="result">{{ prediction_text }}</div>
+    {% endif %}
+    <div class="meta">Model: RandomForest • Test Accuracy: {{ acc_display }}</div>
+  </div>
+</body>
+</html>
+"""
+
+# ---------- 3) ROUTES ----------
+@app.route("/", methods=["GET"])
+def home():
+    acc_display = f"{saved_acc*100:.2f}%" if saved_acc is not None else "—"
+    return render_template_string(PAGE, prediction_text=None, acc_display=acc_display)
+
+@app.route("/predict", methods=["POST"])
+def predict_form():
+    try:
+        vals = [
+            float(request.form.get("sepal_length")),
+            float(request.form.get("sepal_width")),
+            float(request.form.get("petal_length")),
+            float(request.form.get("petal_width")),
+        ]
+        pred = model.predict([np.array(vals)])[0]
+        species = SPECIES[pred]
+        acc_display = f"{saved_acc*100:.2f}%" if saved_acc is not None else "—"
+        return render_template_string(PAGE,
+                                      prediction_text=f"Predicted Species: {species}",
+                                      acc_display=acc_display)
+    except Exception as e:
+        return render_template_string(PAGE,
+                                      prediction_text=f"Error: {e}",
+                                      acc_display="—"), 400
+
+@app.route("/predict_json", methods=["POST"])
+def predict_json():
+    """
+    JSON example:
+    {
+      "sepal_length": 5.1, "sepal_width": 3.5,
+      "petal_length": 1.4, "petal_width": 0.2
+    }
+    """
+    try:
+        data = request.get_json(force=True)
+        vals = [float(data[k]) for k in ("sepal_length","sepal_width","petal_length","petal_width")]
+        pred = model.predict([np.array(vals)])[0]
+        return jsonify({"prediction": SPECIES[pred]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+# ---------- 4) MAIN ----------
+if __name__ == "__main__":
+    # First run will train + save model automatically
+    print("✅ Model ready.",
+          f"Saved accuracy: {saved_acc*100:.2f}%" if saved_acc else "")
+    app.run(debug=True)
